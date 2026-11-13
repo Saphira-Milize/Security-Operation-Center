@@ -59,9 +59,24 @@ services:
     networks:
       - opensearch-net
 
+  vector:
+    image: timberio/vector:0.61.0-debian
+    container_name: vector
+    environment:
+      - OPENSEARCH_INITIAL_ADMIN_PASSWORD=${OPENSEARCH_INITIAL_ADMIN_PASSWORD}
+      - VECTOR_DANGEROUSLY_ALLOW_ENV_VAR_INTERPOLATION=true
+    volumes:
+      - ./Vector/vector.yaml:/etc/vector/vector.yaml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    ports: 
+      - 8686:8686  
+      - 9000:9000
+    networks:
+      - opensearch-net
+
 volumes:
   opensearch-data1:
   opensearch-data2:
 
 networks:
-  opensearch-net:
+ opensearch-net:

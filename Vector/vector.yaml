@@ -1,0 +1,36 @@
+data_dir: "/var/lib/vector"
+
+sources:
+  docker:
+    type: docker_logs
+
+transforms:
+  Transform_demo:
+    type: remap
+    inputs:
+      - docker
+    source: |
+      .new_field = "new value"
+      if exists(.duration) && !is_null(.duration) {
+        .duration = parse_duration!(to_string!(.duration), "s")
+      }
+      if is_object(.label) {
+        .label = map_keys(object!(.label)) -> |key| {
+          replace(key, ".", "_")
+        }
+      }
+
+sinks:
+  my_sink_id:
+    type: elasticsearch
+    inputs:
+      - Transform_demo
+    endpoints:
+      - "https://opensearch-node1:9200"
+    api_version: v8
+    auth:
+      strategy: basic
+      user: "admin"
+      password: "${OPENSEARCH_INITIAL_ADMIN_PASSWORD}"
+    tls:
+      verify_certificate: false

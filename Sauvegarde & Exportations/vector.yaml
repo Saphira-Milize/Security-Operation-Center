@@ -1,0 +1,67 @@
+# Set global options
+data_dir: "/var/lib/vector"
+
+# Vector's API (disabled by default)
+# Enable and try it out with the `vector top` command
+# NOTE: this is _enabled_ for helm chart deployments, see: https://github.com/vectordotdev/helm-charts/blob/develop/charts/vector/examples/datadog-values.yaml#L78-L81
+api:
+  enabled: false
+# address = "127.0.0.1:8686"
+
+# Ingest data by tailing one or more files
+sources:
+
+  test:
+    type: demo_logs
+    format: json
+  
+  #windows:
+    #type: windows_event_log
+    #channels:
+      #- System,Application,Security
+
+  #linux:
+   # type: syslog
+    #address: 0.0.0.0:9000
+    #mode: tcp
+
+  #nginx:
+    #type: nginx_metrics
+    #endpoints:
+      #- http://localhost:8000/basic_status
+
+  #docker:
+    #type: docker_logs
+
+# Structure and parse via Vector's Remap Language
+transforms:
+  Transform_demo:
+    type: remap
+    inputs:
+      - test
+    source: |-
+      . = parse_json!(.message)
+      .new_field = "new value"
+      .status = to_int!(.status)
+      .duration = parse_duration!(.duration, "s")
+      .new_name = del(.old_name)
+
+sinks:
+  my_sink_id:
+    type: elasticsearch
+    inputs:
+      - Transform_demo
+    api_version: auto
+    compression: none
+    dangerously_allow_unconfined_template_resolution: false
+    doc_type: _doc
+    endpoints:
+      - https://opensearch-node1:9200
+    id_key: id
+    mode: bulk
+    opensearch_service_type: managed
+    pipeline: pipeline-name
+    query:
+      X-Powered-By: Vector
+    request_retry_partial: false
+    suppress_type_name: false
