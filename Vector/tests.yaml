@@ -1,0 +1,108 @@
+# Tests unitaires des transformations Vector.
+# Lancement : ./scripts/test-vector.sh
+tests:
+  - name: "SSH - échec de mot de passe détecté"
+    inputs:
+      - insert_at: security_detect
+        type: log
+        log_fields:
+          message: "Failed password for invalid user admin from 203.0.113.7 port 52344 ssh2"
+          process.name: "sshd"
+    outputs:
+      - extract_from: security_detect
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.event.outcome, "failure")
+              assert_eq!(.event.action, "ssh_login")
+              assert_eq!(.user.name, "admin")
+              assert_eq!(.source.ip, "203.0.113.7")
+              assert_eq!(.event.kind, "alert")
+
+  - name: "SSH - connexion réussie (pas d'alerte)"
+    inputs:
+      - insert_at: security_detect
+        type: log
+        log_fields:
+          message: "Accepted publickey for euloge from 192.168.1.20 port 50022 ssh2"
+          process.name: "sshd"
+    outputs:
+      - extract_from: security_detect
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.event.outcome, "success")
+              assert_eq!(.user.name, "euloge")
+              assert_eq!(.auth.method, "publickey")
+              assert_eq!(.event.kind, "event")
+
+  - name: "sudo vers root"
+    inputs:
+      - insert_at: security_detect
+        type: log
+        log_fields:
+          message: "  bob : TTY=pts/0 ; PWD=/home/bob ; USER=root ; COMMAND=/usr/bin/cat /etc/shadow"
+          process.name: "sudo"
+    outputs:
+      - extract_from: security_detect
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.event.action, "sudo")
+              assert_eq!(.user.name, "bob")
+              assert_eq!(.user.target.name, "root")
+              assert_eq!(.process.command_line, "/usr/bin/cat /etc/shadow")
+              assert_eq!(.event.kind, "alert")
+
+  - name: "Docker - niveau d'erreur et JSON"
+    inputs:
+      - insert_at: docker_normalize
+        type: log
+        log_fields:
+          message: '{"level":"error","msg":"connexion refusée"}'
+          container_name: "api"
+          host: "abc123"
+    outputs:
+      - extract_from: docker_normalize
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.log.level, "error")
+              assert_eq!(.json.msg, "connexion refusée")
+              assert_eq!(.container.name, "api")
+              assert_eq!(.event.dataset, "docker")
+              assert!(exists(."@timestamp"))
+
+  - name: "Syslog RFC 3164 - fuseau horaire et champs"
+    inputs:
+      - insert_at: syslog_normalize
+        type: log
+        log_fields:
+          message: "<38>Nov 16 09:59:32 srv-web-01 sshd[4242]: Failed password for root from 203.0.113.7 port 22 ssh2"
+          host: "172.18.0.1"
+    outputs:
+      - extract_from: security_detect
+        conditions:
+          - type: vrl
+            source: |
+              # Europe/Paris (UTC+1 en novembre) → 08:59:32 UTC
+              assert_eq!(format_timestamp!(."@timestamp", "%H:%M:%S"), "08:59:32")
+              assert_eq!(.host.name, "srv-web-01")
+              assert_eq!(.host.ip, "172.18.0.1")
+              assert_eq!(.process.name, "sshd")
+              assert_eq!(.log.level, "info")
+              assert_eq!(.user.name, "root")
+              assert_eq!(.event.outcome, "failure")
+
+  - name: "Syslog non conforme conservé"
+    inputs:
+      - insert_at: syslog_normalize
+        type: log
+        log_fields:
+          message: ""
+    outputs:
+      - extract_from: syslog_normalize
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.tags, ["_syslog_parse_failure"])
