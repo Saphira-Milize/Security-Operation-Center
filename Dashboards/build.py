@@ -31,10 +31,11 @@ INDEX_REF = [{"name": "kibanaSavedObjectMeta.searchSourceJSON.index",
               "type": "index-pattern", "id": ALL}]
 
 
-def vis(id_, title, type_, params, aggs, query="", description=""):
+def vis(id_, title, type_, params, aggs, query="", description="", colors=None):
     state = {"title": title, "type": type_, "params": params, "aggs": aggs}
     attributes = {"title": title, "description": description, "version": 1,
-                  "visState": json.dumps(state, ensure_ascii=False), "uiStateJSON": "{}"}
+                  "visState": json.dumps(state, ensure_ascii=False),
+                  "uiStateJSON": json.dumps({"vis": {"colors": colors}} if colors else {})}
     if type_ == "markdown":  # pas de données : aucun index pattern associé
         attributes["kibanaSavedObjectMeta"] = {"searchSourceJSON": json.dumps(
             {"query": {"query": "", "language": "kuery"}, "filter": []})}
@@ -88,14 +89,14 @@ def table(id_, title, aggs, query="", per_page=8):
         "totalFunc": "sum", "percentageCol": ""}, aggs, query)
 
 
-def donut(id_, title, aggs, query=""):
+def donut(id_, title, aggs, query="", colors=None):
     return vis(id_, title, "pie", {
         "type": "pie", "addTooltip": True, "addLegend": True, "legendPosition": "right",
         "isDonut": True, "labels": {"show": False, "values": True, "last_level": True,
-                                    "truncate": 100}}, aggs, query)
+                                    "truncate": 100}}, aggs, query, colors=colors)
 
 
-def stacked_bars(id_, title, split_field, split_label, query="", y_label="Événements"):
+def stacked_bars(id_, title, split_field, split_label, query="", y_label="Événements", colors=None):
     return vis(id_, title, "histogram", {
         "type": "histogram", "grid": {"categoryLines": False},
         "categoryAxes": [{"id": "CategoryAxis-1", "type": "category", "position": "bottom",
@@ -111,13 +112,46 @@ def stacked_bars(id_, title, split_field, split_label, query="", y_label="Évén
         "addTooltip": True, "addLegend": True, "legendPosition": "right", "times": [],
         "addTimeMarker": False, "labels": {"show": False},
         "thresholdLine": {"show": False, "value": 10, "width": 1, "style": "full", "color": "#E7664C"}},
-        [count(y_label), over_time(), terms("3", split_field, split_label, schema="group")], query)
+        [count(y_label), over_time(), terms("3", split_field, split_label, schema="group")], query,
+        colors=colors)
 
 
 # --- Index patterns ---------------------------------------------------------
+# La liste des champs est déduite du modèle d'index et livrée avec l'index
+# pattern : sans elle, les visualisations échouent (« Could not locate that
+# index-pattern-field ») tant qu'un administrateur n'a pas rafraîchi la liste,
+# ce qu'un compte en lecture seule ne peut pas faire.
+OSD_TYPES = {"keyword": "string", "text": "string", "ip": "ip", "date": "date",
+             "integer": "number", "long": "number", "flat_object": "string"}
+
+
+def template_fields(properties, prefix=""):
+    for name, spec in sorted(properties.items()):
+        if "properties" in spec:
+            yield from template_fields(spec["properties"], prefix + name + ".")
+        else:
+            type_ = spec["type"]
+            aggregatable = type_ not in ("text", "flat_object")
+            yield {"name": prefix + name, "type": OSD_TYPES[type_], "esTypes": [type_],
+                   "count": 0, "scripted": False, "searchable": True,
+                   "aggregatable": aggregatable, "readFromDocValues": aggregatable}
+
+
+def meta_field(name, type_, searchable=True, aggregatable=True):
+    return {"name": name, "type": type_, "esTypes": [name], "count": 0, "scripted": False,
+            "searchable": searchable, "aggregatable": aggregatable, "readFromDocValues": False}
+
+
+template = json.loads((Path(__file__).parent.parent / "OpenSearch" / "index-template.json").read_text())
+FIELDS = json.dumps(
+    [meta_field("_id", "string"), meta_field("_index", "string"),
+     meta_field("_score", "number", searchable=False, aggregatable=False),
+     meta_field("_source", "_source", searchable=False, aggregatable=False)]
+    + list(template_fields(template["template"]["mappings"]["properties"])))
+
 for id_, title in [(ALL, "soc-*"), ("soc-syslog", "soc-syslog-*"), ("soc-web", "soc-web-*"),
                    ("soc-honeypot", "soc-honeypot-*"), ("soc-docker", "soc-docker-*")]:
-    add("index-pattern", id_, {"title": title, "timeFieldName": "@timestamp"})
+    add("index-pattern", id_, {"title": title, "timeFieldName": "@timestamp", "fields": FIELDS})
 
 # --- Visualisations ---------------------------------------------------------
 panels = []  # (id, x, y, largeur, hauteur) sur une grille de 48 colonnes
@@ -136,61 +170,62 @@ place(vis("soc-intro", "SOC - Mode d'emploi", "markdown", {
         "toutes sources confondues : une IP qui échoue en SSH, scanne le site web *et* touche "
         "le pot de miel remonte en tête.\n\n"
         "Cliquez sur une valeur pour filtrer tout le tableau de bord. "
-        "Alertes déclenchées : menu **Alerting**.")}, []), 0, 0, 16, 9)
+        "Alertes déclenchées : menu **Alerting**.")}, []), 0, 0, 16, 11)
 
-place(big_number("soc-m-alerts", "Alertes", count("Alertes"), ALERTS), 16, 0, 8, 9)
+place(big_number("soc-m-alerts", "Alertes", count("Alertes"), ALERTS), 16, 0, 8, 11)
 place(big_number("soc-m-ips", "IP à l'origine d'alertes",
-                 metric("1", "cardinality", "source.ip", "IP attaquantes"), ALERTS), 24, 0, 8, 9)
+                 metric("1", "cardinality", "source.ip", "IP attaquantes"), ALERTS), 24, 0, 8, 11)
 place(big_number("soc-m-score", "Score de menace cumulé",
-                 metric("1", "sum", "rule.score", "Score de menace"), ALERTS), 32, 0, 8, 9)
-place(big_number("soc-m-events", "Événements collectés", count("Événements"), ""), 40, 0, 8, 9)
+                 metric("1", "sum", "rule.score", "Score de menace"), ALERTS), 32, 0, 8, 11)
+place(big_number("soc-m-events", "Événements collectés", count("Événements"), ""), 40, 0, 8, 11)
 
 place(stacked_bars("soc-alerts-time", "Alertes dans le temps, par gravité",
-                   "rule.severity", "Gravité", ALERTS, "Alertes"), 0, 9, 30, 14)
+                   "rule.severity", "Gravité", ALERTS, "Alertes",
+                   colors={"high": "#BD271E", "medium": "#F5A700", "low": "#6092C0"}), 0, 11, 30, 14)
 place(donut("soc-alerts-rule", "Répartition des alertes par règle",
             [count("Alertes"), terms("2", "rule.name", "Règle", schema="segment", size=15)], ALERTS),
-      30, 9, 18, 14)
+      30, 11, 18, 14)
 
 place(table("soc-attackers", "Attaquants : classement par score de menace", [
     metric("1", "sum", "rule.score", "Score de menace"),
     {"id": "2", "enabled": True, "type": "count", "schema": "metric", "params": {"customLabel": "Alertes"}},
     metric("3", "cardinality", "rule.id", "Règles distinctes"),
     metric("4", "cardinality", "event.dataset", "Sources de logs"),
-    terms("5", "source.ip", "IP source", size=20)], ALERTS, per_page=10), 0, 23, 24, 16)
+    terms("5", "source.ip", "IP source", size=20)], ALERTS, per_page=10), 0, 25, 24, 16)
 place(table("soc-mitre", "Techniques MITRE ATT&CK observées", [
     count("Alertes"),
     terms("2", "threat.tactic.name", "Tactique", size=15),
     terms("3", "threat.technique.id", "ID", size=15),
-    terms("4", "threat.technique.name", "Technique", size=15)], ALERTS, per_page=10), 24, 23, 24, 16)
+    terms("4", "threat.technique.name", "Technique", size=15)], ALERTS, per_page=10), 24, 25, 24, 16)
 
 place(donut("soc-ssh", "Connexions SSH : réussites et échecs",
             [count("Connexions"), terms("2", "event.outcome", "Résultat", schema="segment")],
-            "event.action:ssh_login"), 0, 39, 12, 13)
+            "event.action:ssh_login", colors={"failure": "#BD271E", "success": "#54B399"}), 0, 41, 12, 13)
 place(table("soc-users", "Comptes visés par des échecs d'authentification", [
     count("Tentatives"), terms("2", "user.name", "Compte", size=20)],
-    "event.outcome:failure and user.name:*"), 12, 39, 12, 13)
+    "event.outcome:failure and user.name:*"), 12, 41, 12, 13)
 place(table("soc-honeypot", "Pot de miel : qui a mordu ?", [
     count("Contacts"),
     terms("2", "source.ip", "IP source", size=20),
     terms("3", "network.protocol", "Service", size=5),
-    terms("4", "rule.name", "Type", size=5)], "event.dataset:honeypot"), 24, 39, 24, 13)
+    terms("4", "rule.name", "Type", size=5)], "event.dataset:honeypot"), 24, 41, 24, 13)
 
 place(stacked_bars("soc-web-status", "Web : requêtes par code HTTP",
                    "http.response.status_code", "Code HTTP", "event.dataset:web", "Requêtes"),
-      0, 52, 24, 13)
+      0, 54, 24, 13)
 place(table("soc-web-urls", "Web : URL attaquées", [
     count("Requêtes"),
     terms("2", "rule.name", "Règle", size=10),
     terms("3", "url.original", "URL", size=20)],
-    "event.dataset:web and event.kind:alert"), 24, 52, 24, 13)
+    "event.dataset:web and event.kind:alert"), 24, 54, 24, 13)
 
 place(stacked_bars("soc-volume", "Volume d'événements par source de logs",
-                   "event.dataset", "Source", "", "Événements"), 0, 65, 30, 13)
+                   "event.dataset", "Source", "", "Événements"), 0, 67, 30, 13)
 place(table("soc-containers", "Conteneurs : erreurs et avertissements", [
     count("Lignes"),
     terms("2", "container.name", "Conteneur", size=20),
     terms("3", "log.level", "Niveau", size=5)],
-    "event.dataset:docker and log.level:(error or critical or warning)"), 30, 65, 18, 13)
+    "event.dataset:docker and log.level:(error or critical or warning)"), 30, 67, 18, 13)
 
 # --- Recherche enregistrée : dernières alertes -------------------------------
 add("search", "soc-latest-alerts", {
@@ -201,7 +236,7 @@ add("search", "soc-latest-alerts", {
         "query": {"query": ALERTS, "language": "kuery"}, "filter": [],
         "highlightAll": True, "version": True,
         "indexRefName": "kibanaSavedObjectMeta.searchSourceJSON.index"})}}, INDEX_REF)
-place("soc-latest-alerts", 0, 78, 48, 20, kind="search")
+place("soc-latest-alerts", 0, 80, 48, 20, kind="search")
 
 # --- Tableau de bord ---------------------------------------------------------
 add("dashboard", "soc-overview", {
