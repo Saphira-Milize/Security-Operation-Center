@@ -5,7 +5,7 @@ cd "$(dirname "$0")/.."
 
 IMAGE="timberio/vector:0.61.0-debian"
 RUN=(docker run --rm
-  -e OPENSEARCH_INITIAL_ADMIN_PASSWORD=test
+  -e VECTOR_PASSWORD=test
   -e SOC_TIMEZONE=Europe/Paris
   -e VECTOR_DANGEROUSLY_ALLOW_ENV_VAR_INTERPOLATION=true
   -v "$PWD/Vector:/etc/vector:ro"

