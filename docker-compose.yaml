@@ -1,7 +1,21 @@
 ---
+x-logging: &common-logging
+  driver: "json-file"
+  options:
+    max-size: "50m"
+    max-file: "3"
+
 x-opensearch-common: &opensearch-common
   image: opensearchproject/opensearch:3.9.0
   restart: unless-stopped
+  deploy:
+    resources:
+      limits:
+        memory: 2048M
+        cpus: '2.0'
+      reservations:
+        memory: 1024M
+  logging: *common-logging
   ulimits:
     memlock:
       soft: -1
@@ -28,13 +42,13 @@ services:
       - discovery.seed_hosts=opensearch-node1,opensearch-node2
       - cluster.initial_cluster_manager_nodes=opensearch-node1,opensearch-node2
       - bootstrap.memory_lock=true  # along with the memlock settings below, disables swapping
-      - OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m  # minimum and maximum Java heap size, recommend setting both to 50% of system RAM
+      - OPENSEARCH_JAVA_OPTS=${OPENSEARCH_JAVA_OPTS:--Xms512m -Xmx512m}  # minimum and maximum Java heap size, recommend setting both to 50% of system RAM
       - OPENSEARCH_INITIAL_ADMIN_PASSWORD=${OPENSEARCH_INITIAL_ADMIN_PASSWORD:?Définissez OPENSEARCH_INITIAL_ADMIN_PASSWORD dans .env}
     volumes:
       - opensearch-data1:/usr/share/opensearch/data
     ports:
-      - 9200:9200
-      - 9600:9600  # required for Performance Analyzer
+      - 127.0.0.1:9200:9200
+      - 127.0.0.1:9600:9600  # required for Performance Analyzer
 
   opensearch-node2:
     <<: *opensearch-common
@@ -45,7 +59,7 @@ services:
       - discovery.seed_hosts=opensearch-node1,opensearch-node2
       - cluster.initial_cluster_manager_nodes=opensearch-node1,opensearch-node2
       - bootstrap.memory_lock=true
-      - OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m
+      - OPENSEARCH_JAVA_OPTS=${OPENSEARCH_JAVA_OPTS:--Xms512m -Xmx512m}
       - OPENSEARCH_INITIAL_ADMIN_PASSWORD=${OPENSEARCH_INITIAL_ADMIN_PASSWORD:?Définissez OPENSEARCH_INITIAL_ADMIN_PASSWORD dans .env}
     volumes:
       - opensearch-data2:/usr/share/opensearch/data
@@ -54,12 +68,20 @@ services:
     image: opensearchproject/opensearch-dashboards:3.9.0
     container_name: opensearch-dashboards
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 1024M
+          cpus: '1.0'
+    logging: *common-logging
     ports:
-      - 5601:5601
+      - 127.0.0.1:5601:5601
     environment:
       OPENSEARCH_HOSTS: '["https://opensearch-node1:9200","https://opensearch-node2:9200"]'
     depends_on:
       opensearch-node1:
+        condition: service_healthy
+      opensearch-node2:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "curl -s -o /dev/null -w '%{http_code}' http://localhost:5601/api/status | grep -qE '200|401' || exit 1"]
@@ -70,30 +92,116 @@ services:
     networks:
       - opensearch-net
 
-  vector:
-    image: timberio/vector:0.61.0-debian
-    container_name: vector
-    restart: unless-stopped
-    environment:
-      - OPENSEARCH_INITIAL_ADMIN_PASSWORD=${OPENSEARCH_INITIAL_ADMIN_PASSWORD:?Définissez OPENSEARCH_INITIAL_ADMIN_PASSWORD dans .env}
-      - VECTOR_DANGEROUSLY_ALLOW_ENV_VAR_INTERPOLATION=true
-      - SOC_TIMEZONE=${SOC_TIMEZONE:-Europe/Paris}
-    volumes:
-      - ./Vector/vector.yaml:/etc/vector/vector.yaml:ro
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-    ports:
-      - 8686:8686       # API Vector (/health)
-      - 9000:9000/tcp   # Syslog TCP
-      - 9000:9000/udp   # Syslog UDP
+  # Provisionnement automatique (comptes, index, rétention, alertes).
+  # S'exécute à chaque démarrage puis s'arrête ; idempotent.
+  soc-setup:
+    image: opensearchproject/opensearch:3.9.0
+    container_name: soc-setup
+    restart: "no"
+    logging: *common-logging
+    entrypoint: ["bash", "/soc/scripts/setup.sh", "opensearch"]
+    environment: &setup-env
+      OPENSEARCH_INITIAL_ADMIN_PASSWORD: ${OPENSEARCH_INITIAL_ADMIN_PASSWORD:?Définissez OPENSEARCH_INITIAL_ADMIN_PASSWORD dans .env}
+      VECTOR_PASSWORD: ${VECTOR_PASSWORD:?Définissez VECTOR_PASSWORD dans .env}
+      ANALYST_PASSWORD: ${ANALYST_PASSWORD:?Définissez ANALYST_PASSWORD dans .env}
+      RETENTION_DAYS: ${RETENTION_DAYS:-30}
+      SOC_WEBHOOK_URL: ${SOC_WEBHOOK_URL:-}
+      OS_URL: https://opensearch-node1:9200
+      OSD_URL: http://opensearch-dashboards:5601
+    volumes: &setup-volumes
+      - ./scripts:/soc/scripts:ro
+      - ./OpenSearch:/soc/OpenSearch:ro
+      - ./Dashboards:/soc/Dashboards:ro
     depends_on:
       opensearch-node1:
         condition: service_healthy
     networks:
       - opensearch-net
 
+  # Import du tableau de bord, une fois Dashboards démarré
+  soc-setup-dashboards:
+    image: opensearchproject/opensearch:3.9.0
+    container_name: soc-setup-dashboards
+    restart: "no"
+    logging: *common-logging
+    entrypoint: ["bash", "/soc/scripts/setup.sh", "dashboards"]
+    environment: *setup-env
+    volumes: *setup-volumes
+    depends_on:
+      opensearch-dashboards:
+        condition: service_healthy
+    networks:
+      - opensearch-net
+
+  vector:
+    image: timberio/vector:0.61.0-debian
+    container_name: vector
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 1024M
+          cpus: '1.0'
+    logging: *common-logging
+    environment:
+      # Compte « vector » uniquement : Vector ne connaît pas le mot de passe admin
+      - VECTOR_PASSWORD=${VECTOR_PASSWORD:?Définissez VECTOR_PASSWORD dans .env}
+      - VECTOR_DANGEROUSLY_ALLOW_ENV_VAR_INTERPOLATION=true
+      - SOC_TIMEZONE=${SOC_TIMEZONE:-Europe/Paris}
+    volumes:
+      - ./Vector/vector.yaml:/etc/vector/vector.yaml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - vector-data:/var/lib/vector
+    ports:
+      - 127.0.0.1:8686:8686                  # API Vector (/health), locale uniquement
+      - ${SYSLOG_PORT:-9000}:9000/tcp        # Syslog TCP, ouvert aux machines surveillées
+      - ${SYSLOG_PORT:-9000}:9000/udp        # Syslog UDP
+    depends_on:
+      opensearch-node1:
+        condition: service_healthy
+      opensearch-node2:
+        condition: service_healthy
+      soc-setup:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/8686 && printf \"GET /health HTTP/1.0\\r\\nHost: 127.0.0.1\\r\\n\\r\\n\" >&3 && grep -q \"\\\"ok\\\":true\" <&3' || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks:
+      - opensearch-net
+
+  # Pot de miel : faux services dont tout contact déclenche une alerte.
+  # Isolé : lecture seule, sans privilèges, sur un réseau séparé du SOC.
+  honeypot:
+    image: python:3.13-alpine
+    container_name: honeypot
+    restart: unless-stopped
+    logging: *common-logging
+    command: ["python", "-u", "/app/honeypot.py"]
+    user: "65534:65534"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 64m
+    pids_limit: 128
+    volumes:
+      - ./Honeypot/honeypot.py:/app/honeypot.py:ro
+    ports:
+      - ${HONEYPOT_HTTP_PORT:-8080}:8080     # faux panneau d'administration
+      - ${HONEYPOT_SSH_PORT:-2222}:2222      # faux SSH
+      - ${HONEYPOT_TELNET_PORT:-2323}:2323   # faux Telnet
+    networks:
+      - honeypot-net
+
 volumes:
   opensearch-data1:
   opensearch-data2:
+  vector-data:
 
 networks:
   opensearch-net:
+  honeypot-net:   # réseau séparé : le pot de miel ne voit pas OpenSearch

@@ -65,7 +65,7 @@ form{background:#fff;padding:2rem;border-radius:8px;box-shadow:0 2px 8px #0002;w
 input{width:100%;padding:.5rem;margin:.4rem 0 1rem;box-sizing:border-box}
 button{width:100%;padding:.6rem;background:#1d4ed8;color:#fff;border:0;border-radius:4px}
 .err{color:#b91c1c;font-size:.9rem}</style></head>
-<body><form method="post" action="/login"><h2>Administration</h2>%s
+<body><form method="post" action="/login"><h2>Administration</h2>{{error}}
 <label>Identifiant<input name="username" autocomplete="off"></label>
 <label>Mot de passe<input name="password" type="password"></label>
 <button>Se connecter</button></form></body></html>"""
@@ -80,7 +80,7 @@ class HttpHandler(BaseHTTPRequestHandler):
         pass  # journalisation gérée par log()
 
     def _page(self, status, error=""):
-        body = (LOGIN_PAGE % error).encode()
+        body = LOGIN_PAGE.replace("{{error}}", error).encode()
         self.send_response(status)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
@@ -146,20 +146,21 @@ class TelnetHandler(socketserver.BaseRequestHandler):
     """Fausse invite de connexion : enregistre l'identifiant, refuse toujours."""
 
     def _line(self):
-        buf = b""
-        while len(buf) < 128:
+        """Lit une ligne ; le surplus reçu est gardé pour l'appel suivant."""
+        while b"\n" not in self._buf and b"\r" not in self._buf and len(self._buf) < 256:
             chunk = self.request.recv(64)
             if not chunk:
                 break
-            buf += chunk
-            if b"\n" in buf or b"\r" in buf:
-                break
-        # Retire les négociations Telnet (octets >= 0xF0) et les fins de ligne
-        return bytes(b for b in buf if 32 <= b < 127).decode().strip()
+            self._buf += chunk
+        raw = self._buf.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+        line, _, self._buf = raw.partition(b"\n")
+        # Ne garde que l'ASCII imprimable (écarte les négociations Telnet)
+        return bytes(b for b in line if 32 <= b < 127).decode().strip()
 
     def handle(self):
         ip = self.client_address[0]
         self.request.settimeout(TIMEOUT)
+        self._buf = b""
         username = None
         password_length = None
         try:
@@ -180,14 +181,26 @@ class TelnetHandler(socketserver.BaseRequestHandler):
                 f"Connexion Telnet depuis {ip}")
 
 
-class TcpServer(socketserver.ThreadingTCPServer):
-    allow_reuse_address = True
-    daemon_threads = True
+def quiet_errors(server_class):
+    """Remplace la trace Python d'une connexion en erreur par une ligne JSON."""
+    class Quiet(server_class):
+        allow_reuse_address = True
+        daemon_threads = True
+
+        def handle_error(self, request, client_address):
+            print(json.dumps({"level": "warning", "msg": "connexion interrompue",
+                              "src_ip": client_address[0],
+                              "detail": clean(sys.exc_info()[1])}), flush=True)
+    return Quiet
+
+
+TcpServer = quiet_errors(socketserver.ThreadingTCPServer)
+HttpServer = quiet_errors(ThreadingHTTPServer)
 
 
 def main():
     servers = [
-        ThreadingHTTPServer(("0.0.0.0", HTTP_PORT), HttpHandler),
+        HttpServer(("0.0.0.0", HTTP_PORT), HttpHandler),
         TcpServer(("0.0.0.0", SSH_PORT), SshHandler),
         TcpServer(("0.0.0.0", TELNET_PORT), TelnetHandler),
     ]
