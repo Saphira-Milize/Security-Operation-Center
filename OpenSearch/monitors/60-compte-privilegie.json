@@ -1,0 +1,69 @@
+{
+  "name": "SOC - Création ou élévation de compte",
+  "type": "monitor",
+  "monitor_type": "query_level_monitor",
+  "enabled": true,
+  "schedule": {
+    "period": {
+      "interval": 1,
+      "unit": "MINUTES"
+    }
+  },
+  "inputs": [
+    {
+      "search": {
+        "indices": [
+          "soc-syslog-*"
+        ],
+        "query": {
+          "size": 5,
+          "_source": [
+            "@timestamp",
+            "host.name",
+            "user.target.name",
+            "group.name",
+            "rule.name"
+          ],
+          "query": {
+            "bool": {
+              "filter": [
+                {
+                  "terms": {
+                    "rule.id": [
+                      "user_created",
+                      "admin_group_added"
+                    ]
+                  }
+                },
+                {
+                  "range": {
+                    "@timestamp": {
+                      "gte": "{{period_end}}||-5m",
+                      "lte": "{{period_end}}",
+                      "format": "epoch_millis"
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      }
+    }
+  ],
+  "triggers": [
+    {
+      "query_level_trigger": {
+        "name": "Compte créé ou ajouté à un groupe d'administration",
+        "severity": "2",
+        "condition": {
+          "script": {
+            "source": "ctx.results[0].hits.total.value > 0",
+            "lang": "painless"
+          }
+        },
+        "actions": []
+      }
+    }
+  ]
+}

@@ -1,0 +1,86 @@
+{
+  "name": "SOC - Brute force SSH",
+  "type": "monitor",
+  "monitor_type": "bucket_level_monitor",
+  "enabled": true,
+  "schedule": {
+    "period": {
+      "interval": 1,
+      "unit": "MINUTES"
+    }
+  },
+  "inputs": [
+    {
+      "search": {
+        "indices": [
+          "soc-syslog-*"
+        ],
+        "query": {
+          "size": 0,
+          "query": {
+            "bool": {
+              "filter": [
+                {
+                  "terms": {
+                    "event.action": [
+                      "ssh_login",
+                      "ssh_invalid_user"
+                    ]
+                  }
+                },
+                {
+                  "term": {
+                    "event.outcome": "failure"
+                  }
+                },
+                {
+                  "range": {
+                    "@timestamp": {
+                      "gte": "{{period_end}}||-5m",
+                      "lte": "{{period_end}}",
+                      "format": "epoch_millis"
+                    }
+                  }
+                }
+              ]
+            }
+          },
+          "aggs": {
+            "par_source": {
+              "composite": {
+                "sources": [
+                  {
+                    "source_ip": {
+                      "terms": {
+                        "field": "source.ip"
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "triggers": [
+    {
+      "bucket_level_trigger": {
+        "name": "5 échecs SSH ou plus en 5 minutes depuis une même IP",
+        "severity": "2",
+        "condition": {
+          "buckets_path": {
+            "nb": "_count"
+          },
+          "parent_bucket_path": "par_source",
+          "script": {
+            "source": "params.nb >= 5",
+            "lang": "painless"
+          }
+        },
+        "actions": []
+      }
+    }
+  ]
+}

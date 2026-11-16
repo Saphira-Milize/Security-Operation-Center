@@ -1,0 +1,283 @@
+{
+  "index_patterns": [
+    "soc-*"
+  ],
+  "priority": 100,
+  "template": {
+    "settings": {
+      "number_of_shards": 1,
+      "number_of_replicas": 1,
+      "plugins.index_state_management.policy_id": "soc-retention"
+    },
+    "mappings": {
+      "dynamic_templates": [
+        {
+          "strings_as_keyword": {
+            "match_mapping_type": "string",
+            "mapping": {
+              "type": "keyword",
+              "ignore_above": 1024
+            }
+          }
+        }
+      ],
+      "properties": {
+        "@timestamp": {
+          "type": "date"
+        },
+        "message": {
+          "type": "text"
+        },
+        "json": {
+          "type": "flat_object"
+        },
+        "tags": {
+          "type": "keyword"
+        },
+        "event": {
+          "properties": {
+            "dataset": {
+              "type": "keyword"
+            },
+            "origin": {
+              "type": "keyword"
+            },
+            "module": {
+              "type": "keyword"
+            },
+            "kind": {
+              "type": "keyword"
+            },
+            "category": {
+              "type": "keyword"
+            },
+            "action": {
+              "type": "keyword"
+            },
+            "outcome": {
+              "type": "keyword"
+            }
+          }
+        },
+        "rule": {
+          "properties": {
+            "id": {
+              "type": "keyword"
+            },
+            "name": {
+              "type": "keyword"
+            },
+            "severity": {
+              "type": "keyword"
+            },
+            "score": {
+              "type": "integer"
+            }
+          }
+        },
+        "threat": {
+          "properties": {
+            "framework": {
+              "type": "keyword"
+            },
+            "tactic": {
+              "properties": {
+                "name": {
+                  "type": "keyword"
+                }
+              }
+            },
+            "technique": {
+              "properties": {
+                "id": {
+                  "type": "keyword"
+                },
+                "name": {
+                  "type": "keyword"
+                }
+              }
+            }
+          }
+        },
+        "host": {
+          "properties": {
+            "ip": {
+              "type": "ip",
+              "ignore_malformed": true
+            },
+            "name": {
+              "type": "keyword"
+            }
+          }
+        },
+        "source": {
+          "properties": {
+            "ip": {
+              "type": "ip",
+              "ignore_malformed": true
+            },
+            "address": {
+              "type": "keyword"
+            },
+            "port": {
+              "type": "integer"
+            }
+          }
+        },
+        "destination": {
+          "properties": {
+            "ip": {
+              "type": "ip",
+              "ignore_malformed": true
+            },
+            "address": {
+              "type": "keyword"
+            },
+            "port": {
+              "type": "integer"
+            }
+          }
+        },
+        "network": {
+          "properties": {
+            "transport": {
+              "type": "keyword"
+            },
+            "protocol": {
+              "type": "keyword"
+            }
+          }
+        },
+        "user": {
+          "properties": {
+            "name": {
+              "type": "keyword"
+            },
+            "target": {
+              "properties": {
+                "name": {
+                  "type": "keyword"
+                }
+              }
+            }
+          }
+        },
+        "group": {
+          "properties": {
+            "name": {
+              "type": "keyword"
+            }
+          }
+        },
+        "auth": {
+          "properties": {
+            "method": {
+              "type": "keyword"
+            }
+          }
+        },
+        "process": {
+          "properties": {
+            "name": {
+              "type": "keyword"
+            },
+            "pid": {
+              "type": "long"
+            },
+            "command_line": {
+              "type": "keyword",
+              "ignore_above": 2048
+            }
+          }
+        },
+        "log": {
+          "properties": {
+            "level": {
+              "type": "keyword"
+            },
+            "stream": {
+              "type": "keyword"
+            },
+            "syslog": {
+              "properties": {
+                "facility": {
+                  "type": "keyword"
+                }
+              }
+            }
+          }
+        },
+        "container": {
+          "properties": {
+            "id": {
+              "type": "keyword"
+            },
+            "name": {
+              "type": "keyword"
+            },
+            "image": {
+              "type": "keyword"
+            },
+            "created_at": {
+              "type": "date"
+            },
+            "compose": {
+              "properties": {
+                "project": {
+                  "type": "keyword"
+                },
+                "service": {
+                  "type": "keyword"
+                }
+              }
+            }
+          }
+        },
+        "http": {
+          "properties": {
+            "version": {
+              "type": "keyword"
+            },
+            "request": {
+              "properties": {
+                "method": {
+                  "type": "keyword"
+                },
+                "referrer": {
+                  "type": "keyword",
+                  "ignore_above": 2048
+                }
+              }
+            },
+            "response": {
+              "properties": {
+                "status_code": {
+                  "type": "integer"
+                },
+                "bytes": {
+                  "type": "long"
+                }
+              }
+            }
+          }
+        },
+        "url": {
+          "properties": {
+            "original": {
+              "type": "keyword",
+              "ignore_above": 2048
+            }
+          }
+        },
+        "user_agent": {
+          "properties": {
+            "original": {
+              "type": "keyword",
+              "ignore_above": 1024
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,78 @@
+{
+  "name": "SOC - Contact avec le pot de miel",
+  "type": "monitor",
+  "monitor_type": "bucket_level_monitor",
+  "enabled": true,
+  "schedule": {
+    "period": {
+      "interval": 1,
+      "unit": "MINUTES"
+    }
+  },
+  "inputs": [
+    {
+      "search": {
+        "indices": [
+          "soc-honeypot-*"
+        ],
+        "query": {
+          "size": 0,
+          "query": {
+            "bool": {
+              "filter": [
+                {
+                  "term": {
+                    "event.kind": "alert"
+                  }
+                },
+                {
+                  "range": {
+                    "@timestamp": {
+                      "gte": "{{period_end}}||-5m",
+                      "lte": "{{period_end}}",
+                      "format": "epoch_millis"
+                    }
+                  }
+                }
+              ]
+            }
+          },
+          "aggs": {
+            "par_source": {
+              "composite": {
+                "sources": [
+                  {
+                    "source_ip": {
+                      "terms": {
+                        "field": "source.ip"
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "triggers": [
+    {
+      "bucket_level_trigger": {
+        "name": "Une IP a contacté le pot de miel",
+        "severity": "2",
+        "condition": {
+          "buckets_path": {
+            "nb": "_count"
+          },
+          "parent_bucket_path": "par_source",
+          "script": {
+            "source": "params.nb >= 1",
+            "lang": "painless"
+          }
+        },
+        "actions": []
+      }
+    }
+  ]
+}

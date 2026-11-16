@@ -1,0 +1,85 @@
+{
+  "name": "SOC - IP à haut risque",
+  "type": "monitor",
+  "monitor_type": "bucket_level_monitor",
+  "enabled": true,
+  "schedule": {
+    "period": {
+      "interval": 1,
+      "unit": "MINUTES"
+    }
+  },
+  "inputs": [
+    {
+      "search": {
+        "indices": [
+          "soc-*"
+        ],
+        "query": {
+          "size": 0,
+          "query": {
+            "bool": {
+              "filter": [
+                {
+                  "term": {
+                    "event.kind": "alert"
+                  }
+                },
+                {
+                  "range": {
+                    "@timestamp": {
+                      "gte": "{{period_end}}||-15m",
+                      "lte": "{{period_end}}",
+                      "format": "epoch_millis"
+                    }
+                  }
+                }
+              ]
+            }
+          },
+          "aggs": {
+            "par_source": {
+              "composite": {
+                "sources": [
+                  {
+                    "source_ip": {
+                      "terms": {
+                        "field": "source.ip"
+                      }
+                    }
+                  }
+                ]
+              },
+              "aggs": {
+                "score": {
+                  "sum": {
+                    "field": "rule.score"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "triggers": [
+    {
+      "bucket_level_trigger": {
+        "name": "Score de menace cumulé de 30 ou plus en 15 minutes (toutes sources confondues)",
+        "severity": "1",
+        "condition": {
+          "buckets_path": {
+            "score": "score"
+          },
+          "parent_bucket_path": "par_source",
+          "script": {
+            "source": "params.score >= 30",
+            "lang": "painless"
+          }
+        },
+        "actions": []
+      }
+    }
+  ]
+}
