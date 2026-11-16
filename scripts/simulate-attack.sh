@@ -30,7 +30,8 @@ HONEYPOT_TELNET_PORT="${HONEYPOT_TELNET_PORT:-2323}"
 line() {
   printf '<%s>1 %s %s %s %s - - %s\n' "$1" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$2" "$3" "$4" "$5"
 }
-send() { nc -w 2 "$HOST" "$PORT"; }
+# Envoi par bash lui-même (/dev/tcp) : pas de dépendance à netcat
+send() { cat > "/dev/tcp/$HOST/$PORT"; }
 # Ligne d'accès nginx (format « combined ») relayée par syslog
 access() { # <méthode> <url> <code> <agent>
   line 190 srv-web-01 nginx - \
@@ -90,8 +91,15 @@ scenario_honeypot() {
   curl -s -o /dev/null -m 5 -A "zgrab/0.x" "$base/admin" || echo "  (pot de miel HTTP injoignable sur $base)"
   curl -s -o /dev/null -m 5 -A "Mozilla/5.0" -d "username=admin&password=admin123" "$base/login" || true
   curl -s -o /dev/null -m 5 -A "Mozilla/5.0" -d "username=root&password=toor" "$base/login" || true
-  printf 'SSH-2.0-libssh2_1.10.0\r\n' | nc -w 2 "$HONEYPOT_HOST" "$HONEYPOT_SSH_PORT" >/dev/null 2>&1 || true
-  printf 'root\r\n123456\r\n' | nc -w 3 "$HONEYPOT_HOST" "$HONEYPOT_TELNET_PORT" >/dev/null 2>&1 || true
+  # Faux SSH : on présente une bannière de client et on lit celle du serveur
+  ( exec 3<>"/dev/tcp/$HONEYPOT_HOST/$HONEYPOT_SSH_PORT"
+    printf 'SSH-2.0-libssh2_1.10.0\r\n' >&3
+    read -r -t 3 _ <&3 ) 2>/dev/null || true
+  # Faux Telnet : identifiant puis mot de passe, comme un robot
+  ( exec 3<>"/dev/tcp/$HONEYPOT_HOST/$HONEYPOT_TELNET_PORT"
+    printf 'root\r\n' >&3; sleep 1
+    printf '123456\r\n' >&3
+    read -r -t 3 -d '' _ <&3 ) 2>/dev/null || true
 }
 
 case "$SCENARIO" in

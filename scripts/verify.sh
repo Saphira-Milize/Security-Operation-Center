@@ -157,7 +157,7 @@ check "campagne d'attaque simulée depuis $IP" ./scripts/simulate-attack.sh tout
 # Sonde UDP : vérifie aussi l'entrée syslog UDP
 TOKEN="sonde-$(date +%s)-$RANDOM"
 printf '<38>1 %s srv-verif sshd 1 - - Failed password for %s from %s port 22 ssh2\n' \
-  "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$TOKEN" "$IP" | nc -u -w 1 "${SYSLOG_HOST:-localhost}" "${SYSLOG_PORT:-9000}" 2>/dev/null
+  "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$TOKEN" "$IP" > "/dev/udp/${SYSLOG_HOST:-localhost}/${SYSLOG_PORT:-9000}"
 
 # Attente de l'indexation (Vector envoie par lots)
 for _ in $(seq 1 20); do

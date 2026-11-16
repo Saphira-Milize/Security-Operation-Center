@@ -1,0 +1,117 @@
+#!/usr/bin/env bash
+# Point d'entrée unique du SOC.  ./soc aide
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")" && pwd)"
+cd "$ROOT"
+
+usage() {
+  cat <<'EOF'
+Usage : ./soc <commande>
+
+  demarrer            démarre le SOC (et crée le .env au premier lancement)
+  arreter             arrête le SOC en conservant les données
+  etat                état des services et alertes en cours
+  rapport [heures]    synthèse d'activité (24 h par défaut), au format Markdown
+  alertes             alertes actives
+  simuler [scénario]  rejoue des attaques factices (ssh, web, scan, compte, honeypot, tout)
+  verifier            contrôle complet : configuration, sécurité, détection, alertes
+  tester              tests unitaires du pipeline Vector
+  configurer          réapplique OpenSearch/ et Dashboards/ (après modification)
+  journaux [service]  suit les journaux (vector, opensearch-node1, honeypot…)
+  ouvrir              ouvre le tableau de bord dans le navigateur
+EOF
+}
+
+load_env() {
+  [[ -f .env ]] || { echo "Fichier .env absent : lancez ./soc demarrer" >&2; exit 1; }
+  set -a; source .env; set +a
+  OS_URL="${OS_URL:-https://localhost:9200}"
+  OSD_URL="${OSD_URL:-http://localhost:5601}"
+}
+os() { curl -sk -m 30 -u "admin:$OPENSEARCH_INITIAL_ADMIN_PASSWORD" "$@"; }
+
+# Mot de passe aléatoire conforme aux règles d'OpenSearch
+password() { printf '%s-%s-%s!' "$1" "$(openssl rand -hex 10)" "$((RANDOM % 90 + 10))"; }
+
+create_env() {
+  [[ -f .env ]] && return
+  echo "→ Premier lancement : création de .env avec des mots de passe aléatoires"
+  local admin vector analyst
+  admin=$(password Adm); vector=$(password Vec); analyst=$(password Ana)
+  # Remplit les trois mots de passe laissés vides dans le modèle
+  awk -v a="$admin" -v v="$vector" -v n="$analyst" '
+    /^OPENSEARCH_INITIAL_ADMIN_PASSWORD=$/ { print $0 a; next }
+    /^VECTOR_PASSWORD=$/                   { print $0 v; next }
+    /^ANALYST_PASSWORD=$/                  { print $0 n; next }
+    { print }' .env.example > .env
+  chmod 600 .env
+  echo "  ✔ .env créé (lisible par vous seul). Identifiants : ./soc etat"
+}
+
+cmd_demarrer() {
+  create_env
+  docker compose up -d
+  echo
+  echo "→ Import du tableau de bord…"
+  docker wait soc-setup-dashboards >/dev/null 2>&1 || true
+  cmd_etat
+}
+
+cmd_etat() {
+  load_env
+  docker compose ps -a --format 'table {{.Name}}\t{{.Status}}'
+  echo
+  echo "Tableau de bord : $OSD_URL/app/dashboards#/view/soc-overview"
+  echo "  administrateur : admin    / voir OPENSEARCH_INITIAL_ADMIN_PASSWORD dans .env"
+  echo "  lecture seule  : analyste / voir ANALYST_PASSWORD dans .env"
+  echo
+  cmd_alertes
+}
+
+cmd_alertes() {
+  load_env
+  os "$OS_URL/_plugins/_alerting/monitors/alerts?alertState=ACTIVE&size=100" | python3 scripts/format.py alertes
+}
+
+cmd_rapport() {
+  load_env
+  local hours="${1:-24}"
+  [[ "$hours" =~ ^[0-9]+$ ]] || { echo "Usage : ./soc rapport [heures]" >&2; exit 1; }
+  os -H 'Content-Type: application/json' "$OS_URL/soc-*/_search" -d '{
+    "size": 0, "track_total_hits": true,
+    "query": { "range": { "@timestamp": { "gte": "now-'"$hours"'h" } } },
+    "aggs": {
+      "sources": { "terms": { "field": "event.dataset" } },
+      "alertes": { "filter": { "term": { "event.kind": "alert" } }, "aggs": {
+        "score": { "sum": { "field": "rule.score" } },
+        "gravite": { "terms": { "field": "rule.severity" } },
+        "regles": { "terms": { "field": "rule.name", "size": 20 } },
+        "techniques": { "multi_terms": { "size": 15, "terms": [
+          { "field": "threat.technique.id" }, { "field": "threat.technique.name" } ] } },
+        "attaquants": { "terms": { "field": "source.ip", "size": 10, "order": { "score": "desc" } }, "aggs": {
+          "score": { "sum": { "field": "rule.score" } },
+          "regles": { "terms": { "field": "rule.name", "size": 4 } },
+          "sources": { "cardinality": { "field": "event.dataset" } } } },
+        "comptes": { "filter": { "term": { "event.outcome": "failure" } }, "aggs": {
+          "noms": { "terms": { "field": "user.name", "size": 8 } } } } } }
+    } }' | python3 scripts/format.py rapport "$hours"
+}
+
+cmd="${1:-aide}"; shift || true
+case "$cmd" in
+  demarrer|up)       cmd_demarrer ;;
+  arreter|down)      docker compose down ;;
+  etat|status)       cmd_etat ;;
+  rapport|report)    cmd_rapport "$@" ;;
+  alertes)           cmd_alertes ;;
+  simuler)           ./scripts/simulate-attack.sh "$@" ;;
+  verifier)          ./scripts/verify.sh "$@" ;;
+  tester)            ./scripts/test-vector.sh ;;
+  configurer)        ./scripts/setup.sh "$@" ;;
+  journaux|logs)     docker compose logs -f --tail 50 "$@" ;;
+  ouvrir)            load_env; url="$OSD_URL/app/dashboards#/view/soc-overview"
+                     if command -v open >/dev/null; then open "$url"; elif command -v xdg-open >/dev/null; then xdg-open "$url"; else echo "$url"; fi ;;
+  aide|-h|--help)    usage ;;
+  *)                 echo "Commande inconnue : $cmd" >&2; usage >&2; exit 1 ;;
+esac
